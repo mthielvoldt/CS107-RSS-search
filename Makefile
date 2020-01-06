@@ -15,8 +15,8 @@ ifeq ($(OSTYPE), solaris)
 	SOCKETLIB = -lsocket
 endif
 
-CFLAGS = -g -Wall -std=gnu99 -Wno-unused-function $(DFLAG)
-LDFLAGS = -g $(SOCKETLIB) -lnsl -lrssnews -L/usr/class/cs107/assignments/assn-4-rss-news-search-lib/$(OSTYPE)
+CFLAGS = -g -Wall -std=gnu99 -Wno-unused-function -m32 $(DFLAG)
+LDFLAGS = -g $(SOCKETLIB) -lnsl -lrssnews -L/home/rileyt/CS107/A4/lib/linux
 PFLAGS= -linker=/usr/pubsw/bin/ld -best-effort
 
 EFENCELIBS= -L/usr/class/cs107/lib -lefence  -pthread

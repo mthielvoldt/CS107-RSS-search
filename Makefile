@@ -28,6 +28,10 @@ TARGET-PURE = rss-news-search.purify
 
 default : $(TARGET)
 
+
+url-test : url-test.o
+	$(CC) url-test.o $(CFLAGS)$(LDFLAGS) -o $@
+
 rss-news-search : $(OBJS)
 	$(CC) $(OBJS) $(CFLAGS)$(LDFLAGS) -o $@
 

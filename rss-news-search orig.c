@@ -4,11 +4,9 @@
 #include <string.h>
 #include <ctype.h>
 
-#include <curl/curl.h>
-
-//#include "url.h"
+#include "url.h"
 #include "bool.h"
-//#include "urlconnection.h"
+#include "urlconnection.h"
 #include "streamtokenizer.h"
 #include "html-utils.h"
 
@@ -46,13 +44,9 @@ static const char *const kWelcomeTextFile = "./data/welcome.txt";
 static const char *const kDefaultFeedsFile = "./data/rss-feeds.txt";
 int main(int argc, char **argv)
 {
-  curl_global_init(CURL_GLOBAL_SSL);  // this needs to run once
-
   Welcome(kWelcomeTextFile);
   BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1]);
   QueryIndices();
-    
-  curl_global_cleanup();  // do some tidying.
   return 0;
 }
 
@@ -136,18 +130,11 @@ static void BuildIndices(const char *feedsFileName)
 
 static void ProcessFeed(const char *remoteDocumentName)
 {
-  //url u;
-  //urlconnection urlconn;
-  mstream rss;
-  MStreamNew(&rss);
+  url u;
+  urlconnection urlconn;
   
-  // Formats the url string.  That's all it does. 
-  //URLNewAbsolute(&u, remoteDocumentName);
-
-  // Actually establishes connection.  This is where I need to intervene.
+  URLNewAbsolute(&u, remoteDocumentName);
   URLConnectionNew(&urlconn, &u);
-  FILE *rss_stream = open_memstream( &rss_buff, &rss_size);
-
   
   switch (urlconn.responseCode) {
       case 0: printf("Unable to connect to \"%s\".  Ignoring...", u.serverName);
@@ -155,7 +142,7 @@ static void ProcessFeed(const char *remoteDocumentName)
       case 200: PullAllNewsItems(&urlconn);
                 break;
       case 301: 
-      case 302: ProcessFeed(urlconn.newUrl);  // recursive. plumbs in new c-str. 
+      case 302: ProcessFeed(urlconn.newUrl);
                 break;
       default: printf("Connection to \"%s\" was established, but unable to retrieve \"%s\". [response code: %d, response message:\"%s\"]\n",
 		      u.serverName, u.fileName, urlconn.responseCode, urlconn.responseMessage);

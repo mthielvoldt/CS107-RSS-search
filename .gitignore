@@ -1,0 +1,13 @@
+
+*.pdf
+
+*.o
+*.odt
+*.odt?
+*.dependencies
+*.swp
+.vscode/
+
+rss-news-search
+curl-test
+

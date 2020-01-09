@@ -10,20 +10,26 @@
 //#include "urlconnection.h"
 #include "bool.h"
 #include "streamtokenizer.h"
+#include "mstreamtokenizer.h"
 #include "html-utils.h"
+
+typedef struct {
+  char title[512];
+  char desc[1024];
+  char url[2048];
+} article_t;
 
 static void Welcome(const char *welcomeTextFileName);
 static void BuildIndices(const char *feedsFileName);
-static void ProcessFeed(const char *remoteDocumentName);
-static void PullAllNewsItems(curlconnection *urlconn);
+static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection);
 static bool GetNextItemTag(streamtokenizer *st);
-static void ProcessSingleNewsItem(streamtokenizer *st);
+static bool ParseItem(streamtokenizer *st, article_t *article );
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
-static void ParseArticle(const char *articleTitle, const char *articleDescription, const char *articleURL);
-static void ScanArticle(streamtokenizer *st, const char *articleTitle, const char *unused, const char *articleURL);
+static void ProcessArticle(article_t *article, curlconnection_t *connection);
 static void QueryIndices();
 static void ProcessResponse(const char *word);
 static bool WordIsWellFormed(const char *word);
+
 
 /**
  * Function: main
@@ -46,13 +52,13 @@ static const char *const kWelcomeTextFile = "./data/welcome.txt";
 static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
 int main(int argc, char **argv)
 {
-  curl_global_init(CURL_GLOBAL_SSL);  // this needs to run once
+  
 
   Welcome(kWelcomeTextFile);
-  BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1]);
+  BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1]);  // runs only once. 
   QueryIndices();
     
-  curl_global_cleanup();  // do some tidying.
+  
   return 0;
 }
 
@@ -106,6 +112,13 @@ static void Welcome(const char *welcomeTextFileName)
 
 static void BuildIndices(const char *feedsFileName)
 {
+  curl_global_init(CURL_GLOBAL_SSL);  // Run once.  BuildIndices runs once for life of program. 
+
+  curlconnection_t connection;    // this will be the only connection.  It will be shared throughtout.
+  CurlConnectionNew(&connection);
+
+  // This is an actual file, so we use the straight streamtokenizer, 
+  // not mstreamtokenizer (memory stream version)
   FILE *infile;
   streamtokenizer st;
   char remoteFileName[1024];
@@ -116,12 +129,15 @@ static void BuildIndices(const char *feedsFileName)
   while (STSkipUntil(&st, ":") != EOF) { // ignore everything up to the first selicolon of the line
     STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
     STNextToken(&st, remoteFileName, sizeof(remoteFileName));   
-    ProcessFeed(remoteFileName);
+    ProcessFeed(remoteFileName, &connection);
   }
   
   STDispose(&st);
   fclose(infile);
   printf("\n");
+
+  CurlConnectionDispose(&connection);
+  curl_global_cleanup();  // once for life of program. 
 }
 
 
@@ -129,38 +145,13 @@ static void BuildIndices(const char *feedsFileName)
  * Function: ProcessFeed
  * ---------------------
  * ProcessFeed locates the specified RSS document, and if a (possibly redirected) connection to that remote
- * document can be established, then PullAllNewsItems is tapped to actually read the feed.  Check out the
- * documentation of the PullAllNewsItems function for more information, and inspect the documentation
- * for ParseArticle for information about what the different response codes mean.
- */
-
-static void ProcessFeed(const char *remoteDocumentName)
-{
-
-  curlconnection cc;  //set aside the memory
-  
-  CurlConnectionNew(&cc, remoteDocumentName);
-
-  if ( CurlConnectionFetch(&cc) != CURLE_OK ) {
-    printf("Problem connecting to: \n%s\nError: %s\n", cc.url, cc.error_str);
-  }
-  else {
-    printf("%s", cc.mbuffer);
-    //PullAllNewsItems(cc.mstream);
-  }
-
-  CurlConnectionDispose(&cc);
-
-}
-
-/**
- * Function: PullAllNewsItems
- * --------------------------
- * Steps though the data of what is assumed to be an RSS feed identifying the names and
+ * document can be established, then reads the feed.  
+ * 
+ * Steps though the data of what is assumed to be an RSS feed identifying the titles and
  * URLs of online news articles.  Check out "datafiles/sample-rss-feed.txt" for an idea of what an
  * RSS feed from the www.nytimes.com (or anything other server that syndicates is stories).
  *
- * PullAllNewsItems views a typical RSS feed as a sequence of "items", where each item is detailed
+ * ProcessFeed views a typical RSS feed as a sequence of "items", where each item is detailed
  * using a generalization of HTML called XML.  A typical XML fragment for a single news item will certainly
  * adhere to the format of the following example:
  *
@@ -173,23 +164,33 @@ static void ProcessFeed(const char *remoteDocumentName)
  *   <guid isPermaLink="false">http://www.nytimes.com/2005/04/24/international/worldspecial2/24cnd-pope.html</guid>
  * </item>
  *
- * PullAllNewsItems reads and discards all characters up through the opening <item> tag (discarding the <item> tag
+ * ProcessFeed reads and discards all characters up through the opening <item> tag (discarding the <item> tag
  * as well, because once it's read and indentified, it's been pulled,) and then hands the state of the stream to
- * ProcessSingleNewsItem, which handles the job of pulling and analyzing everything up through and including the </item>
- * tag. PullAllNewsItems processes the entire RSS feed and repeatedly advancing to the next <item> tag and then allowing
- * ProcessSingleNewsItem do process everything up until </item>.
+ * ParseItem(), which handles the job of pulling and analyzing everything up through and including the </item>
+ * tag. ProcessFeed processes the entire RSS feed and repeatedly advancing to the next <item> tag and then allowing
+ * ParseItem() to process everything up until </item>.
  */
 
 static const char *const kTextDelimiters = " \t\n\r\b!@$%^*()_+={[}]|\\'\":;/?.>,<~`";
-static void PullAllNewsItems(curlconnection *urlconn)
+static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection)
 {
-  streamtokenizer st;
-  STNew(&st, urlconn->mstream, kTextDelimiters, false);
-  while (GetNextItemTag(&st)) { // if true is returned, then assume that <item ...> has just been read and pulled from the data stream
-    ProcessSingleNewsItem(&st);
-  }
+  article_t article;  // this is all local.  Homegrown. 4kb on the stack.
   
-  STDispose(&st);
+  mstreamtokenizer_t mst;
+  MSTNew(&mst, kTextDelimiters, false);
+
+  // in next line, passing in mst.stream feels a little dirty. 
+  if ( CurlConnectionFetch(remoteDocumentName, mst.stream, connection ) != CURLE_OK ) {
+    printf("Problem connecting to: \n%s\nError: %s\n", remoteDocumentName, connection->error_str);
+    return;
+  }
+
+  while (GetNextItemTag(&mst.st)) { // if true is returned, assume <item ...> was just read and pulled from the data stream
+    if( ParseItem(&mst.st, &article ) )
+      ProcessArticle(&article, connection);
+    else printf("Could not read article link from RSS.\n");
+  }
+  MSTDispose(&mst);
 }
 
 /**
@@ -211,6 +212,10 @@ static void PullAllNewsItems(curlconnection *urlconn)
  * going overboard.  (Note that we use strncasecmp so that
  * string comparisons are case-insensitive.  That's the case
  * throughout the entire code base.)
+ * 
+ * The intended side-effect is that the stream is advanced up to the 
+ * point in the stream where <item ...> tag ends.  If the file end 
+ * is found before another <item>, the function returns false.  
  */
 
 static const char *const kItemTagPrefix = "<item";
@@ -248,22 +253,27 @@ static const char *const kItemEndTag = "</item>";
 static const char *const kTitleTagPrefix = "<title";
 static const char *const kDescriptionTagPrefix = "<description";
 static const char *const kLinkTagPrefix = "<link";
-static void ProcessSingleNewsItem(streamtokenizer *st)
+static bool ParseItem(streamtokenizer *st, article_t *article)
 {
   char htmlTag[1024];
-  char articleTitle[1024];
-  char articleDescription[1024];
-  char articleURL[1024];
-  articleTitle[0] = articleDescription[0] = articleURL[0] = '\0';
+  article->title[0] = article->desc[0] = article->url[0] = '\0';
   
+  // step through the tags inside an <item> section.  Pull out the Titles, Descriptions and Links. 
   while (GetNextTag(st, htmlTag, sizeof(htmlTag)) && (strcasecmp(htmlTag, kItemEndTag) != 0)) {
-    if (strncasecmp(htmlTag, kTitleTagPrefix, strlen(kTitleTagPrefix)) == 0) ExtractElement(st, htmlTag, articleTitle, sizeof(articleTitle));
-    if (strncasecmp(htmlTag, kDescriptionTagPrefix, strlen(kDescriptionTagPrefix)) == 0) ExtractElement(st, htmlTag, articleDescription, sizeof(articleDescription));
-    if (strncasecmp(htmlTag, kLinkTagPrefix, strlen(kLinkTagPrefix)) == 0) ExtractElement(st, htmlTag, articleURL, sizeof(articleURL));
+    
+    if (strncasecmp(htmlTag, kTitleTagPrefix, strlen(kTitleTagPrefix)) == 0) 
+      ExtractElement(st, htmlTag, article->title, sizeof(article->title));
+    
+    if (strncasecmp(htmlTag, kDescriptionTagPrefix, strlen(kDescriptionTagPrefix)) == 0) 
+      ExtractElement(st, htmlTag, article->desc, sizeof(article->desc));
+
+    if (strncasecmp(htmlTag, kLinkTagPrefix, strlen(kLinkTagPrefix)) == 0) 
+      ExtractElement(st, htmlTag, article->url, sizeof(article->url));
   }
+
+  //printf("%s\n", article->url);
   
-  if (strncmp(articleURL, "", sizeof(articleURL)) == 0) return;     // punt, since it's not going to take us anywhere
-  ParseArticle(articleTitle, articleDescription, articleURL);
+  return (article->url[0] != '\0'); // if URL is empty, return false.  Otherwise true. 
 }
 
 /**
@@ -289,71 +299,27 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
 {
   assert(htmlTag[strlen(htmlTag) - 1] == '>');
   if (htmlTag[strlen(htmlTag) - 2] == '/') return;    // e.g. <description/> would state that a description is not being supplied
-  STNextTokenUsingDifferentDelimiters(st, dataBuffer, bufferLength, "<");
+
+  // run through printed text (spaces and punctuation allowed, <[{}]> not) until we see "/title" "/description" or "/link"  
+  // Or until we see a token that's > 10 characters long, which we assume to be a valid description. 
+  while( STNextTokenUsingDifferentDelimiters(st, dataBuffer, bufferLength, "<>[]{}") ) {
+    // if we encounter the close tag, we can stop looking, and zero out the buffer. 
+    if (strcmp(dataBuffer, "/title") == 0 || strcmp(dataBuffer, "/description") == 0 || strcmp(dataBuffer, "/link") == 0) {
+      strcpy(dataBuffer, "");
+      break;
+    }
+    // if we find some significant amount of text, we can stop looking and call it good. 
+    if (strlen(dataBuffer) > 15) break;
+  }
+
   RemoveEscapeCharacters(dataBuffer);
-  if (dataBuffer[0] == '<') strcpy(dataBuffer, "");  // e.g. <description></description> also means there's no description
+  
   STSkipUntil(st, ">");
   STSkipOver(st, ">");
 }
 
-/** 
- * Function: ParseArticle
- * ----------------------
- * Attempts to establish a network connect to the news article identified by the three
- * parameters.  The network connection is either established of not.  The implementation
- * is prepared to handle a subset of possible (but by far the most common) scenarios,
- * and those scenarios are categorized by response code:
- *
- *    0 means that the server in the URL doesn't even exist or couldn't be contacted.
- *    200 means that the document exists and that a connection to that very document has
- *        been established.
- *    301 means that the document has moved to a new location
- *    302 also means that the document has moved to a new location
- *    4xx and 5xx (which are covered by the default case) means that either
- *        we didn't have access to the document (403), the document didn't exist (404),
- *        or that the server failed in some undocumented way (5xx).
- *
- * The are other response codes, but for the time being we're punting on them, since
- * no others appears all that often, and it'd be tedious to be fully exhaustive in our
- * enumeration of all possibilities.
- */
-
-static void ParseArticle(const char *articleTitle, const char *articleDescription, const char *articleURL)
-{
-
-  printf("Title:%s\n", articleTitle);
-
-  /*
-  url u;
-  urlconnection urlconn;
-  streamtokenizer st;
-
-  URLNewAbsolute(&u, articleURL);
-  URLConnectionNew(&urlconn, &u);
-  
-  switch (urlconn.responseCode) {
-      case 0: printf("Unable to connect to \"%s\".  Domain name or IP address is nonexistent.\n", articleURL);
-	      break;
-      case 200: printf("Scanning \"%s\" from \"http://%s\"\n", articleTitle, u.serverName);
-	        STNew(&st, urlconn.dataStream, kTextDelimiters, false);
-		ScanArticle(&st, articleTitle, articleDescription, articleURL);
-		STDispose(&st);
-		break;
-      case 301:
-      case 302: // just pretend we have the redirected URL all along, though index using the new URL and not the old one...
-                ParseArticle(articleTitle, articleDescription, urlconn.newUrl);
-		break;
-      default: printf("Unable to pull \"%s\" from \"%s\". [Response code: %d] Punting...\n", articleTitle, u.serverName, urlconn.responseCode);
-	       break;
-  }
-  
-  URLConnectionDispose(&urlconn);
-  URLDispose(&u);
-  */
-}
-
 /**
- * Function: ScanArticle
+ * Function: ProcessArticle
  * ---------------------
  * Parses the specified article, skipping over all HTML tags, and counts the numbers
  * of well-formed words that could potentially serve as keys in the set of indices.
@@ -365,8 +331,19 @@ static void ParseArticle(const char *articleTitle, const char *articleDescriptio
  * code that indexes the specified content.
  */
 
-static void ScanArticle(streamtokenizer *st, const char *articleTitle, const char *unused, const char *articleURL)
+static void ProcessArticle( article_t *article, curlconnection_t *connection )
 {
+  // In original, &st was passed in from ParseArticle, where it was initialized like so: 
+  //  STNew(&st, urlconn.dataStream, kTextDelimiters, false);
+  mstreamtokenizer_t mst;
+  MSTNew(&mst, kTextDelimiters, false); 
+  streamtokenizer *st = &mst.st;
+  
+  if(CurlConnectionFetch(article->url, mst.stream, connection) != CURLE_OK) {
+    printf("Could not get article url:\n");
+    return;
+  }
+
   int numWords = 0;
   char word[1024];
   char longestWord[1024] = {'\0'};
@@ -377,9 +354,9 @@ static void ScanArticle(streamtokenizer *st, const char *articleTitle, const cha
     } else {
       RemoveEscapeCharacters(word);
       if (WordIsWellFormed(word)) {
-	numWords++;
-	if (strlen(word) > strlen(longestWord))
-	  strcpy(longestWord, word);
+        numWords++;
+        if (strlen(word) > strlen(longestWord))
+	        strcpy(longestWord, word);
       }
     }
   }
@@ -389,6 +366,8 @@ static void ScanArticle(streamtokenizer *st, const char *articleTitle, const cha
   if (strlen(longestWord) >= 15 && (strchr(longestWord, '-') == NULL)) 
     printf(" [Ooooo... long word!]");
   printf("\n");
+
+  MSTDispose(&mst);
 }
 
 /** 

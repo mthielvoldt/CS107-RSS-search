@@ -4,18 +4,18 @@
 #include <string.h>
 #include <ctype.h>
 
-#include <curl/curl.h>
+#include "curlconnection.h"
 
 //#include "url.h"
-#include "bool.h"
 //#include "urlconnection.h"
+#include "bool.h"
 #include "streamtokenizer.h"
 #include "html-utils.h"
 
 static void Welcome(const char *welcomeTextFileName);
 static void BuildIndices(const char *feedsFileName);
 static void ProcessFeed(const char *remoteDocumentName);
-static void PullAllNewsItems(urlconnection *urlconn);
+static void PullAllNewsItems(curlconnection *urlconn);
 static bool GetNextItemTag(streamtokenizer *st);
 static void ProcessSingleNewsItem(streamtokenizer *st);
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
@@ -43,7 +43,7 @@ static bool WordIsWellFormed(const char *word);
  */
 
 static const char *const kWelcomeTextFile = "./data/welcome.txt";
-static const char *const kDefaultFeedsFile = "./data/rss-feeds.txt";
+static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
 int main(int argc, char **argv)
 {
   curl_global_init(CURL_GLOBAL_SSL);  // this needs to run once
@@ -136,34 +136,21 @@ static void BuildIndices(const char *feedsFileName)
 
 static void ProcessFeed(const char *remoteDocumentName)
 {
-  //url u;
-  //urlconnection urlconn;
-  mstream rss;
-  MStreamNew(&rss);
-  
-  // Formats the url string.  That's all it does. 
-  //URLNewAbsolute(&u, remoteDocumentName);
 
-  // Actually establishes connection.  This is where I need to intervene.
-  URLConnectionNew(&urlconn, &u);
-  FILE *rss_stream = open_memstream( &rss_buff, &rss_size);
+  curlconnection cc;  //set aside the memory
+  
+  CurlConnectionNew(&cc, remoteDocumentName);
 
-  
-  switch (urlconn.responseCode) {
-      case 0: printf("Unable to connect to \"%s\".  Ignoring...", u.serverName);
-              break;
-      case 200: PullAllNewsItems(&urlconn);
-                break;
-      case 301: 
-      case 302: ProcessFeed(urlconn.newUrl);  // recursive. plumbs in new c-str. 
-                break;
-      default: printf("Connection to \"%s\" was established, but unable to retrieve \"%s\". [response code: %d, response message:\"%s\"]\n",
-		      u.serverName, u.fileName, urlconn.responseCode, urlconn.responseMessage);
-	       break;
-  };
-  
-  URLConnectionDispose(&urlconn);
-  URLDispose(&u);
+  if ( CurlConnectionFetch(&cc) != CURLE_OK ) {
+    printf("Problem connecting to: \n%s\nError: %s\n", cc.url, cc.error_str);
+  }
+  else {
+    printf("%s", cc.mbuffer);
+    //PullAllNewsItems(cc.mstream);
+  }
+
+  CurlConnectionDispose(&cc);
+
 }
 
 /**
@@ -194,10 +181,10 @@ static void ProcessFeed(const char *remoteDocumentName)
  */
 
 static const char *const kTextDelimiters = " \t\n\r\b!@$%^*()_+={[}]|\\'\":;/?.>,<~`";
-static void PullAllNewsItems(urlconnection *urlconn)
+static void PullAllNewsItems(curlconnection *urlconn)
 {
   streamtokenizer st;
-  STNew(&st, urlconn->dataStream, kTextDelimiters, false);
+  STNew(&st, urlconn->mstream, kTextDelimiters, false);
   while (GetNextItemTag(&st)) { // if true is returned, then assume that <item ...> has just been read and pulled from the data stream
     ProcessSingleNewsItem(&st);
   }
@@ -333,6 +320,10 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
 
 static void ParseArticle(const char *articleTitle, const char *articleDescription, const char *articleURL)
 {
+
+  printf("Title:%s\n", articleTitle);
+
+  /*
   url u;
   urlconnection urlconn;
   streamtokenizer st;
@@ -358,6 +349,7 @@ static void ParseArticle(const char *articleTitle, const char *articleDescriptio
   
   URLConnectionDispose(&urlconn);
   URLDispose(&u);
+  */
 }
 
 /**

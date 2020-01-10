@@ -1,3 +1,13 @@
+
+Without the database work, (basically just doing URL fetching) 
+The BuildIndices took 1059877 cycles and 35 seconds to run with just BBC world and Boston Globe. 
+Observed that articles proceeded much faster than BBC. 
+Also observed that it took a few seconds to get the first BBC article, and was subsequently faster. 
+
+BBC World News (World Front Page): http://newsrss.bbc.co.uk/rss/newsonline_world_edition/front_page/rss.xml
+Boston Globe National: https://www.boston.com/tag/national-news/?feed=rss
+
+
 For those of you in need of a hash function for strings,
 you can use the following, which is lifted from a textbook
 we used to use in CS106A.  You'll need to modify it so that

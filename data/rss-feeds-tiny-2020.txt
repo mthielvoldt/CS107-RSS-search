@@ -1,1 +1,2 @@
 BBC World News (World Front Page): http://feeds.bbci.co.uk/news/rss.xml
+BBC World News (Old World page): http://newsrss.bbc.co.uk/rss/newsonline_world_edition/front_page/rss.xml

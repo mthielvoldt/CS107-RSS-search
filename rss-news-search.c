@@ -3,15 +3,17 @@
 #include <assert.h>
 #include <string.h>
 #include <ctype.h>
+#include <strings.h>
 
 #include "curlconnection.h"
-
-//#include "url.h"
-//#include "urlconnection.h"
 #include "bool.h"
 #include "streamtokenizer.h"
 #include "mstreamtokenizer.h"
 #include "html-utils.h"
+#include "hashset.h"
+#include "multitable.h"
+
+
 
 typedef struct {
   char title[512];
@@ -19,13 +21,20 @@ typedef struct {
   char url[2048];
 } article_t;
 
+typedef struct {
+  hashset stop_list; 
+  hashset articles;
+  multitable w_a_pairs;
+} search_db; 
+
 static void Welcome(const char *welcomeTextFileName);
-static void BuildIndices(const char *feedsFileName);
-static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection);
+static void LoadStopList(hashset *stop_list);
+static void BuildIndices(const char *feedsFileName, search_db *db);
+static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection, search_db *db);
 static bool GetNextItemTag(streamtokenizer *st);
 static bool ParseItem(streamtokenizer *st, article_t *article );
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
-static void ProcessArticle(article_t *article, curlconnection_t *connection);
+static void ProcessArticle(article_t *article, curlconnection_t *connection, search_db *db);
 static void QueryIndices();
 static void ProcessResponse(const char *word);
 static bool WordIsWellFormed(const char *word);
@@ -52,10 +61,21 @@ static const char *const kWelcomeTextFile = "./data/welcome.txt";
 static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
 int main(int argc, char **argv)
 {
-  
+  search_db db;   // the database. This will be passed down the function hierarchy.
+  clock_t start, finish;
+  time_t t1, t2;
 
   Welcome(kWelcomeTextFile);
-  BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1]);  // runs only once. 
+
+  LoadStopList(&db.stop_list);
+
+  start = clock();
+  t1 = time(NULL);
+  BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1], &db);  // runs only once. 
+  finish = clock();
+  t2 = time(NULL);
+  printf("that took %ld cycles and %f seconds.\n", finish-start, difftime(t2, t1));
+
   QueryIndices();
     
   
@@ -93,7 +113,62 @@ static void Welcome(const char *welcomeTextFileName)
   STDispose(&st); // remember that STDispose doesn't close the file, since STNew doesn't open one.. 
   fclose(infile);
 }
+/** 
+ * StringHash                     
+ * ----------  
+ * This function adapted from Eric Roberts' "The Art and Science of C"
+ * It takes a string and uses it to derive a hash code, which   
+ * is an integer in the range [0, numBuckets).  The hash code is computed  
+ * using a method called "linear congruence."  A similar function using this     
+ * method is described on page 144 of Kernighan and Ritchie.  The choice of                                                     
+ * the value for the kHashMultiplier can have a significant effect on the                            
+ * performance of the algorithm, but not on its correctness.                                                    
+ * This hash function has the additional feature of being case-insensitive,  
+ * hashing "Peter Pawlowski" and "PETER PAWLOWSKI" to the same code.  
+ */  
 
+static const signed long kHashMultiplier = -1664117991L;
+static int StringHash(const void *string, int numBuckets)  
+{           
+  char *s = (char*)string; 
+  int i;
+  unsigned long hashcode = 0;
+  
+  for (i = 0; i < strlen(s); i++)  
+    hashcode = hashcode * kHashMultiplier + tolower(s[i]);  
+  
+  return hashcode % numBuckets;                                
+}
+
+static int StringCmp(const void *a, const void*b) {
+  return strcasecmp( (const char*)a, (const char*)b );
+}
+
+static const int kstopword_buckets = 4001;
+static void LoadStopList(hashset *stop_list) {
+  //First, we initialize the list.  Because we set this up to store char arrays 
+  // of fixed width, we don't need to worry about the HashSetFree function. 
+  
+  int i = 0;
+  FILE* infile;
+  streamtokenizer st;
+  char buffer[32];
+  HashSetNew(stop_list, sizeof(buffer), kstopword_buckets, StringHash, StringCmp, NULL);
+  infile = fopen("data/stop-words.txt", "r");
+  assert(infile != NULL);
+  STNew(&st, infile, kNewLineDelimiters, true);
+
+  while (STNextToken(&st, buffer, sizeof(buffer))) {
+    //printf("%s ", buffer);
+    HashSetEnter(stop_list, buffer);
+    i++;
+  }
+  
+  printf("%d stop words loaded\n", i);
+  STDispose(&st); // remember that STDispose doesn't close the file, since STNew doesn't open one.. 
+  fclose(infile);
+
+}
 /**
  * Function: BuildIndices
  * ----------------------
@@ -110,7 +185,7 @@ static void Welcome(const char *welcomeTextFileName)
  * document and index its content.
  */
 
-static void BuildIndices(const char *feedsFileName)
+static void BuildIndices(const char *feedsFileName, search_db *db )
 {
   curl_global_init(CURL_GLOBAL_SSL);  // Run once.  BuildIndices runs once for life of program. 
 
@@ -129,7 +204,7 @@ static void BuildIndices(const char *feedsFileName)
   while (STSkipUntil(&st, ":") != EOF) { // ignore everything up to the first selicolon of the line
     STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
     STNextToken(&st, remoteFileName, sizeof(remoteFileName));   
-    ProcessFeed(remoteFileName, &connection);
+    ProcessFeed(remoteFileName, &connection, db);
   }
   
   STDispose(&st);
@@ -172,7 +247,7 @@ static void BuildIndices(const char *feedsFileName)
  */
 
 static const char *const kTextDelimiters = " \t\n\r\b!@$%^*()_+={[}]|\\'\":;/?.>,<~`";
-static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection)
+static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection, search_db *db)
 {
   article_t article;  // this is all local.  Homegrown. 4kb on the stack.
   
@@ -187,7 +262,7 @@ static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connec
 
   while (GetNextItemTag(&mst.st)) { // if true is returned, assume <item ...> was just read and pulled from the data stream
     if( ParseItem(&mst.st, &article ) )
-      ProcessArticle(&article, connection);
+      ProcessArticle(&article, connection, db);
     else printf("Could not read article link from RSS.\n");
   }
   MSTDispose(&mst);
@@ -331,10 +406,9 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
  * code that indexes the specified content.
  */
 
-static void ProcessArticle( article_t *article, curlconnection_t *connection )
+static void ProcessArticle( article_t *article, curlconnection_t *connection, search_db *db )
 {
-  // In original, &st was passed in from ParseArticle, where it was initialized like so: 
-  //  STNew(&st, urlconn.dataStream, kTextDelimiters, false);
+
   mstreamtokenizer_t mst;
   MSTNew(&mst, kTextDelimiters, false); 
   streamtokenizer *st = &mst.st;

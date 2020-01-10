@@ -10,22 +10,8 @@
 #include "streamtokenizer.h"
 #include "mstreamtokenizer.h"
 #include "html-utils.h"
-#include "hashset.h"
-#include "multitable.h"
+#include "searchdb.h"
 
-
-
-typedef struct {
-  char title[512];
-  char desc[1024];
-  char url[2048];
-} article_t;
-
-typedef struct {
-  hashset stop_list; 
-  hashset articles;
-  multitable w_a_pairs;
-} search_db; 
 
 static void Welcome(const char *welcomeTextFileName);
 static void LoadStopList(hashset *stop_list);
@@ -59,12 +45,16 @@ static bool WordIsWellFormed(const char *word);
 
 static const char *const kWelcomeTextFile = "./data/welcome.txt";
 static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
+
+
 int main(int argc, char **argv)
 {
   search_db db;   // the database. This will be passed down the function hierarchy.
   clock_t start, finish;
   time_t t1, t2;
 
+  InitDatabase(&db);
+  
   Welcome(kWelcomeTextFile);
 
   LoadStopList(&db.stop_list);
@@ -76,8 +66,9 @@ int main(int argc, char **argv)
   t2 = time(NULL);
   printf("that took %ld cycles and %f seconds.\n", finish-start, difftime(t2, t1));
 
-  QueryIndices();
-    
+  QueryIndices();  
+
+  DisposeDatabase(&db); 
   
   return 0;
 }
@@ -113,38 +104,7 @@ static void Welcome(const char *welcomeTextFileName)
   STDispose(&st); // remember that STDispose doesn't close the file, since STNew doesn't open one.. 
   fclose(infile);
 }
-/** 
- * StringHash                     
- * ----------  
- * This function adapted from Eric Roberts' "The Art and Science of C"
- * It takes a string and uses it to derive a hash code, which   
- * is an integer in the range [0, numBuckets).  The hash code is computed  
- * using a method called "linear congruence."  A similar function using this     
- * method is described on page 144 of Kernighan and Ritchie.  The choice of                                                     
- * the value for the kHashMultiplier can have a significant effect on the                            
- * performance of the algorithm, but not on its correctness.                                                    
- * This hash function has the additional feature of being case-insensitive,  
- * hashing "Peter Pawlowski" and "PETER PAWLOWSKI" to the same code.  
- */  
 
-static const signed long kHashMultiplier = -1664117991L;
-static int StringHash(const void *string, int numBuckets)  
-{           
-  char *s = (char*)string; 
-  int i;
-  unsigned long hashcode = 0;
-  
-  for (i = 0; i < strlen(s); i++)  
-    hashcode = hashcode * kHashMultiplier + tolower(s[i]);  
-  
-  return hashcode % numBuckets;                                
-}
-
-static int StringCmp(const void *a, const void*b) {
-  return strcasecmp( (const char*)a, (const char*)b );
-}
-
-static const int kstopword_buckets = 4001;
 static void LoadStopList(hashset *stop_list) {
   //First, we initialize the list.  Because we set this up to store char arrays 
   // of fixed width, we don't need to worry about the HashSetFree function. 
@@ -152,8 +112,7 @@ static void LoadStopList(hashset *stop_list) {
   int i = 0;
   FILE* infile;
   streamtokenizer st;
-  char buffer[32];
-  HashSetNew(stop_list, sizeof(buffer), kstopword_buckets, StringHash, StringCmp, NULL);
+  char buffer[kkey_size];
   infile = fopen("data/stop-words.txt", "r");
   assert(infile != NULL);
   STNew(&st, infile, kNewLineDelimiters, true);
@@ -192,15 +151,19 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
   curlconnection_t connection;    // this will be the only connection.  It will be shared throughtout.
   CurlConnectionNew(&connection);
 
+  
+  
+
+
   // This is an actual file, so we use the straight streamtokenizer, 
   // not mstreamtokenizer (memory stream version)
   FILE *infile;
   streamtokenizer st;
   char remoteFileName[1024];
-  
   infile = fopen(feedsFileName, "r");
   assert(infile != NULL);
   STNew(&st, infile, kNewLineDelimiters, true);
+
   while (STSkipUntil(&st, ":") != EOF) { // ignore everything up to the first selicolon of the line
     STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
     STNextToken(&st, remoteFileName, sizeof(remoteFileName));   

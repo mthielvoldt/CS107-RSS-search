@@ -22,8 +22,9 @@ static bool ParseItem(streamtokenizer *st, article_t *article );
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
 static void ProcessArticle(article_t *article, curlconnection_t *connection, search_db *db);
 static void QueryIndices();
-static void ProcessResponse(const char *word);
+static void ProcessResponse(const char *word, search_db *db);
 static bool WordIsWellFormed(const char *word);
+static void AddPair(char *word, search_db *db, article_t *article_addr );
 
 
 /**
@@ -57,7 +58,7 @@ int main(int argc, char **argv)
   
   Welcome(kWelcomeTextFile);
 
-  LoadStopList(&db.stop_list);
+  LoadStopList(&db.stop_words);
 
   start = clock();
   t1 = time(NULL);
@@ -66,7 +67,7 @@ int main(int argc, char **argv)
   t2 = time(NULL);
   printf("that took %ld cycles and %f seconds.\n", finish-start, difftime(t2, t1));
 
-  QueryIndices();  
+  QueryIndices(&db);  
 
   DisposeDatabase(&db); 
   
@@ -151,10 +152,6 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
   curlconnection_t connection;    // this will be the only connection.  It will be shared throughtout.
   CurlConnectionNew(&connection);
 
-  
-  
-
-
   // This is an actual file, so we use the straight streamtokenizer, 
   // not mstreamtokenizer (memory stream version)
   FILE *infile;
@@ -169,6 +166,11 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
     STNextToken(&st, remoteFileName, sizeof(remoteFileName));   
     ProcessFeed(remoteFileName, &connection, db);
   }
+
+  // now we sort all vectors that store the occurrance of a word in an article.  
+  // When we search for a term, the articles we get back will be in sorted order from those
+  // articles that mention the term the most, to those the the fewest mentions. 
+  SortOccurrances(db);
   
   STDispose(&st);
   fclose(infile);
@@ -375,11 +377,19 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
   mstreamtokenizer_t mst;
   MSTNew(&mst, kTextDelimiters, false); 
   streamtokenizer *st = &mst.st;
+
+  // Is article already in the db?  If so, skip it; we have already read it all. 
+  if( HashSetLookup(&db->articles, article) != NULL ) return;
+  // If we got here, the article is not in the db yet. So let's add it. 
+  HashSetEnter(&db->articles, article);
   
+  // pull the article from the interwebs. 
   if(CurlConnectionFetch(article->url, mst.stream, connection) != CURLE_OK) {
     printf("Could not get article url:\n");
     return;
   }
+
+
 
   int numWords = 0;
   char word[1024];
@@ -388,15 +398,20 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
   while (STNextToken(st, word, sizeof(word))) {
     if (strcasecmp(word, "<") == 0) {
       SkipIrrelevantContent(st); // in html-utls.h
-    } else {
+    } 
+    else {
       RemoveEscapeCharacters(word);
-      if (WordIsWellFormed(word)) {
+      if ( WordIsWellFormed(word)) {
+
+        RecordOccurrance(word, article, db);  // This is where we put it into the database. 
         numWords++;
         if (strlen(word) > strlen(longestWord))
 	        strcpy(longestWord, word);
       }
     }
   }
+
+  
 
   printf("\tWe counted %d well-formed words [including duplicates].\n", numWords);
   printf("\tThe longest word scanned was \"%s\".", longestWord);
@@ -415,15 +430,15 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
  * that contain that word.
  */
 
-static void QueryIndices()
+static void QueryIndices(search_db *db)
 {
   char response[1024];
   while (true) {
-    printf("Please enter a single query term that might be in our set of indices [enter to quit]: ");
+    printf("Please enter a single query term [enter to quit]: ");
     fgets(response, sizeof(response), stdin);
     response[strlen(response) - 1] = '\0';
     if (strcasecmp(response, "") == 0) break;
-    ProcessResponse(response);
+    ProcessResponse(response, db);
   }
 }
 
@@ -434,11 +449,13 @@ static void QueryIndices()
  * for a list of web documents containing the specified word.
  */
 
-static void ProcessResponse(const char *word)
+static void ProcessResponse(const char *word, search_db *db)
 {
   if (WordIsWellFormed(word)) {
-    printf("\tWell, we don't have the database mapping words to online news articles yet, but if we DID have\n");
-    printf("\tour hashset of indices, we'd list all of the articles containing \"%s\".\n", word);
+
+    //Does word exist in words? 
+    PrintArticles( word, db);
+
   } else {
     printf("\tWe won't be allowing words like \"%s\" into our set of indices.\n", word);
   }
@@ -457,11 +474,22 @@ static void ProcessResponse(const char *word)
 
 static bool WordIsWellFormed(const char *word)
 {
-  int i;
-  if (strlen(word) == 0) return true;
-  if (!isalpha((int) word[0])) return false;
+  int i, k;
+  
+  if (strlen(word) == 0) return false;  // this was true.  Not sure why an empty string in considered well-formed. 
+
+  if (!isalpha((int) word[0])) return false;  // First character must be a letter.
+
+  
+  k = 0;
   for (i = 1; i < strlen(word); i++)
+  {
+    // there must not be more than one hyphen. 
+    if (( word[i] == '-') && ++k > 1 ) return false;
+    // letters after the first must all be either letters, numbers, or hyphens. 
     if (!isalnum((int) word[i]) && (word[i] != '-')) return false; 
+  }
+
 
   return true;
 }

@@ -51,7 +51,7 @@ static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
 int main(int argc, char **argv)
 {
   search_db db;   // the database. This will be passed down the function hierarchy.
-  clock_t start, finish;
+  //clock_t start, finish;
   time_t t1, t2;
 
   InitDatabase(&db);
@@ -60,12 +60,12 @@ int main(int argc, char **argv)
 
   LoadStopList(&db.stop_words);
 
-  start = clock();
+  //start = clock();
   t1 = time(NULL);
   BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1], &db);  // runs only once. 
-  finish = clock();
+  //finish = clock();
   t2 = time(NULL);
-  printf("that took %ld cycles and %f seconds.\n", finish-start, difftime(t2, t1));
+  printf("that took %f seconds.\n\n", difftime(t2, t1));
 
   QueryIndices(&db);  
 
@@ -157,15 +157,20 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
   FILE *infile;
   streamtokenizer st;
   char remoteFileName[1024];
+  char rss_label[400];
   infile = fopen(feedsFileName, "r");
   assert(infile != NULL);
   STNew(&st, infile, kNewLineDelimiters, true);
 
-  while (STSkipUntil(&st, ":") != EOF) { // ignore everything up to the first selicolon of the line
+  while (STNextTokenUsingDifferentDelimiters(&st, rss_label, 400, ":")) { // ignore everything up to the first selicolon of the line
     STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
     STNextToken(&st, remoteFileName, sizeof(remoteFileName));   
+    STSkipOver(&st, "\r\n");
+    printf("\nIndexing: %s\n", rss_label);
     ProcessFeed(remoteFileName, &connection, db);
   }
+  
+  printf("Processed %d unique articles. \n", HashSetCount(&db->articles));
 
   // now we sort all vectors that store the occurrance of a word in an article.  
   // When we search for a term, the articles we get back will be in sorted order from those
@@ -380,16 +385,17 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
 
   // Is article already in the db?  If so, skip it; we have already read it all. 
   if( HashSetLookup(&db->articles, article) != NULL ) return;
-  // If we got here, the article is not in the db yet. So let's add it. 
-  HashSetEnter(&db->articles, article);
+  
   
   // pull the article from the interwebs. 
   if(CurlConnectionFetch(article->url, mst.stream, connection) != CURLE_OK) {
-    printf("Could not get article url:\n");
+    printf("Could not get article url:%s\n", article->url);
     return;
   }
 
-
+  // If we got here, the article is not in the db yet, but we just successfully read the article contents, 
+  // So now is the time to add it. 
+  HashSetEnter(&db->articles, article);
 
   int numWords = 0;
   char word[1024];

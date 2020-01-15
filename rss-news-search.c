@@ -423,13 +423,15 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
     }
   }
 
-  
+  char title_substring[81];
+  strncpy(title_substring, article->title, 80);
+  title_substring[80] = '\0';
 
-  printf("\tWe counted %d well-formed words [including duplicates].\n", numWords);
-  printf("\tThe longest word scanned was \"%s\".", longestWord);
-  if (strlen(longestWord) >= 15 && (strchr(longestWord, '-') == NULL)) 
-    printf(" [Ooooo... long word!]");
-  printf("\n");
+  printf("    %s  Words: %d \n", title_substring, numWords);
+  //printf("\tThe longest word scanned was \"%s\".", longestWord);
+  //if (strlen(longestWord) >= 15 && (strchr(longestWord, '-') == NULL)) 
+  //  printf(" [Ooooo... long word!]");
+  //printf("\n");
 
   MSTDispose(&mst);
 }

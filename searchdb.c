@@ -104,7 +104,17 @@ occurrance_t* MatchingOccurrance( article_t *article_p, article_list_t *word_p)
 }
 
 bool RecordOccurrance(char *word, article_t *article_in, search_db *db){
-  assert(strlen(word) > 0);
+
+  int word_length = strlen(word);
+  assert(word_length > 0);
+
+  // this function doesn't know how long word might be. 
+  // but it can only store [kkey_size] words (including null terminator).
+  // so we check it it's too long, and if it is, insert a null terminator 
+  // so later we don't copy too much.
+  if( (word_length + 1) > kkey_size )
+    word[kkey_size-1] = '\0';
+
   int title_length = strlen(article_in->title);
   assert(title_length > 0);
   assert(title_length < TITLE_N_BYTES);

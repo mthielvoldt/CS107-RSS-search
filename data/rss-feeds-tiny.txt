@@ -1,1 +1,1 @@
-Boston Globe National: https://www.boston.com/tag/national-news/?feed=rss
+BBC World News (Entertainment): http://newsrss.bbc.co.uk/rss/newsonline_world_edition/entertainment/rss.xml

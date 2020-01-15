@@ -354,7 +354,7 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
       break;
     }
     // if we find some significant amount of text, we can stop looking and call it good. 
-    if (strlen(dataBuffer) > 15) break;
+    if (strlen(dataBuffer) > 9) break;
   }
 
   RemoveEscapeCharacters(dataBuffer);
@@ -378,6 +378,12 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
 
 static void ProcessArticle( article_t *article, curlconnection_t *connection, search_db *db )
 {
+
+  if(strlen(article->title) == 0) {
+    printf("something is wrong with article's title: \"%s\"", article->title);
+    return; 
+  }
+
 
   mstreamtokenizer_t mst;
   MSTNew(&mst, kTextDelimiters, false); 

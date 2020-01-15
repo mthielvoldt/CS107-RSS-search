@@ -106,7 +106,8 @@ occurrance_t* MatchingOccurrance( article_t *article_p, article_list_t *word_p)
 bool RecordOccurrance(char *word, article_t *article_in, search_db *db){
   assert(strlen(word) > 0);
   int title_length = strlen(article_in->title);
-  assert(title_length > 0 && title_length < TITLE_N_BYTES );
+  assert(title_length > 0);
+  assert(title_length < TITLE_N_BYTES);
 
   // Is Word in stop list? 
   if (HashSetLookup(&db->stop_words, word) != NULL) return false;

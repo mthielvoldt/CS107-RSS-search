@@ -19,3 +19,7 @@ Seattle Times (Top Stories): http://seattletimes.nwsource.com/rss/home.xml
 Seattle Times (Nation/World): http://seattletimes.nwsource.com/rss/nationworld.xml
 Seattle Times (Politics): http://seattletimes.nwsource.com/rss/politics.xml
 Seattle Times (Entire Site): http://seattletimes.nwsource.com/rss/seattletimes.xml
+New York Times Home Page: http://www.nytimes.com/services/xml/rss/nyt/HomePage.xml
+Slashdot: http://rss.slashdot.org/Slashdot/slashdot
+Techdirt: http://www.techdirt.com/techdirt_rss.xml
+Wired: http://www.wired.com/news/feeds/rss2/0,2610,,00.xml

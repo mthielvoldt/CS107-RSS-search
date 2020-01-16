@@ -1,4 +1,7 @@
 
+#ifndef __MSTREAMTOKENIZER_H
+#define __MSTREAMTOKENIZER_H
+
 #include <stdio.h>
 #include <stdlib.h>
 #include "streamtokenizer.h"
@@ -35,3 +38,4 @@ inline int MSTSkipUntil(mstreamtokenizer_t *mst, const char *skipUntilSet) {
   return STSkipUntil(&mst->st, skipUntilSet);
 }
 
+#endif

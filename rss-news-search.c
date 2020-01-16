@@ -11,16 +11,21 @@
 #include "mstreamtokenizer.h"
 #include "html-utils.h"
 #include "searchdb.h"
+#include "news-thread.h"
 
 
 static void Welcome(const char *welcomeTextFileName);
 static void LoadStopList(hashset *stop_list);
 static void BuildIndices(const char *feedsFileName, search_db *db);
-static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection, search_db *db);
+
+void DownloaderThread( void *arg );
+static void ParseFeed(streamtokenizer *st, domain_t *domain);
+static void DownloadArticle( int article_index, domain_t *domain, curlconnection_t *connection );
+
 static bool GetNextItemTag(streamtokenizer *st);
 static bool ParseItem(streamtokenizer *st, article_t *article );
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
-static void ProcessArticle(article_t *article, curlconnection_t *connection, search_db *db);
+static void ProcessArticle(article_t *article, search_db *db);
 static void QueryIndices();
 static void ProcessResponse(const char *word, search_db *db);
 static bool WordIsWellFormed(const char *word);
@@ -45,15 +50,13 @@ static void AddPair(char *word, search_db *db, article_t *article_addr );
  */
 
 static const char *const kWelcomeTextFile = "./data/welcome.txt";
-static const char *const kDefaultFeedsFile = "./data/rss-feeds-tiny.txt";
+static const char *const kDefaultFeedsFile = "./data/rss-feeds-large.txt";
 
 
 int main(int argc, char **argv)
 {
   search_db db;   // the database. This will be passed down the function hierarchy.
-  //clock_t start, finish;
   time_t t1, t2;
-
   InitDatabase(&db);
   
   Welcome(kWelcomeTextFile);
@@ -129,6 +132,48 @@ static void LoadStopList(hashset *stop_list) {
   fclose(infile);
 
 }
+
+static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
+
+  int path_index;
+  domain_t *active_domain; 
+  char full_url[1024], domain_name[512], previous_domain_name[512], rss_label[400];
+  FILE *infile;
+  streamtokenizer st;
+  
+  infile = fopen(feedsFileName, "r");
+  assert(infile != NULL);
+  STNew(&st, infile, kNewLineDelimiters, true);
+    // build the domains. 
+  domains->n_domains = 0;
+  while (STNextTokenUsingDifferentDelimiters(&st, rss_label, 400, ":")) { // ignore everything up to the first selicolon of the line
+    STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
+    STNextToken(&st, full_url, sizeof(full_url));   
+    STSkipOver(&st, "\r\n");
+
+    // find the first slash after position 10  https://subdomain.domain.com/
+    // to separate out just the domain from the full URL. 
+    path_index = (strchr(full_url + 10, '/') - full_url);
+    strncpy(domain_name, full_url, path_index );
+    domain_name[path_index] = '\0';
+
+
+    // if this domain is not the same as the previous domain, advance to the next domain.
+    if( strcmp(domain_name, previous_domain_name) ) { 
+      active_domain = &domains->domains[domains->n_domains];
+      domains->n_domains++;
+
+      InitDomain(active_domain);
+      // advance previous domain name
+      strcpy( previous_domain_name, domain_name);
+    }
+    // copy the feed url to the active domain. 
+    strcpy( active_domain->rss_url[active_domain->n_unclaimed_feeds], full_url);
+    active_domain->n_unclaimed_feeds++;
+  }
+  STDispose(&st);
+  fclose(infile);
+}
 /**
  * Function: BuildIndices
  * ----------------------
@@ -148,27 +193,24 @@ static void LoadStopList(hashset *stop_list) {
 static void BuildIndices(const char *feedsFileName, search_db *db )
 {
   curl_global_init(CURL_GLOBAL_SSL);  // Run once.  BuildIndices runs once for life of program. 
+  domain_list_t domains; 
+  domains.n_domains = 0;
 
-  curlconnection_t connection;    // this will be the only connection.  It will be shared throughtout.
-  CurlConnectionNew(&connection);
+  ReadFeedsFile(feedsFileName, &domains);
 
-  // This is an actual file, so we use the straight streamtokenizer, 
-  // not mstreamtokenizer (memory stream version)
-  FILE *infile;
-  streamtokenizer st;
-  char remoteFileName[1024];
-  char rss_label[400];
-  infile = fopen(feedsFileName, "r");
-  assert(infile != NULL);
-  STNew(&st, infile, kNewLineDelimiters, true);
+  for( int i = 0; i < domains.n_domains; i++ )
+  {
+    printf("\nDomain %d:\n", i );
+    for(int j = 0; j < domains.domains[i].n_unclaimed_feeds; j++) 
+    {
+      printf("%s\n", domains.domains[i].rss_url[j]);
+    }
 
-  while (STNextTokenUsingDifferentDelimiters(&st, rss_label, 400, ":")) { // ignore everything up to the first selicolon of the line
-    STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
-    STNextToken(&st, remoteFileName, sizeof(remoteFileName));   
-    STSkipOver(&st, "\r\n");
-    printf("\nIndexing: %s\n", rss_label);
-    ProcessFeed(remoteFileName, &connection, db);
   }
+  
+  //ProcessFeed(full_url, db);
+  
+  //ProcessArticle(&article, db);
   
   printf("Processed %d unique articles. \n", HashSetCount(&db->articles));
 
@@ -177,26 +219,23 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
   // articles that mention the term the most, to those the the fewest mentions. 
   SortOccurrances(db);
   
-  STDispose(&st);
-  fclose(infile);
   printf("\n");
 
-  CurlConnectionDispose(&connection);
+  
   curl_global_cleanup();  // once for life of program. 
 }
 
-
 /**
- * Function: ProcessFeed
+ * Function: DownloaderThread
  * ---------------------
- * ProcessFeed locates the specified RSS document, and if a (possibly redirected) connection to that remote
+ * DownloaderThread locates the specified RSS document, and if a (possibly redirected) connection to that remote
  * document can be established, then reads the feed.  
  * 
  * Steps though the data of what is assumed to be an RSS feed identifying the titles and
  * URLs of online news articles.  Check out "datafiles/sample-rss-feed.txt" for an idea of what an
  * RSS feed from the www.nytimes.com (or anything other server that syndicates is stories).
  *
- * ProcessFeed views a typical RSS feed as a sequence of "items", where each item is detailed
+ * DownloaderThread views a typical RSS feed as a sequence of "items", where each item is detailed
  * using a generalization of HTML called XML.  A typical XML fragment for a single news item will certainly
  * adhere to the format of the following example:
  *
@@ -209,33 +248,93 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
  *   <guid isPermaLink="false">http://www.nytimes.com/2005/04/24/international/worldspecial2/24cnd-pope.html</guid>
  * </item>
  *
- * ProcessFeed reads and discards all characters up through the opening <item> tag (discarding the <item> tag
+ * DownloaderThread reads and discards all characters up through the opening <item> tag (discarding the <item> tag
  * as well, because once it's read and indentified, it's been pulled,) and then hands the state of the stream to
  * ParseItem(), which handles the job of pulling and analyzing everything up through and including the </item>
- * tag. ProcessFeed processes the entire RSS feed and repeatedly advancing to the next <item> tag and then allowing
+ * tag. DownloaderThread processes the entire RSS feed and repeatedly advancing to the next <item> tag and then allowing
  * ParseItem() to process everything up until </item>.
  */
 
 static const char *const kTextDelimiters = " \t\n\r\b!@$%^*()_+={[}]|\\'\":;/?.>,<~`";
-static void ProcessFeed(const char *remoteDocumentName, curlconnection_t *connection, search_db *db)
-{
-  article_t article;  // this is all local.  Homegrown. 4kb on the stack.
-  
+
+void DownloaderThread( void *arg ) {
+
+  curlconnection_t connection;    // Each thread has a single connection.
+  CurlConnectionNew(&connection);
+  int l_rss_index, article_index;
   mstreamtokenizer_t mst;
-  MSTNew(&mst, kTextDelimiters, false);
 
-  // in next line, passing in mst.stream feels a little dirty. 
-  if ( CurlConnectionFetch(remoteDocumentName, mst.stream, connection ) != CURLE_OK ) {
-    printf("Problem connecting to: \n%s\nError: %s\n", remoteDocumentName, connection->error_str);
-    return;
-  }
+  domain_t *domain = (domain_t*)arg; 
 
-  while (GetNextItemTag(&mst.st)) { // if true is returned, assume <item ...> was just read and pulled from the data stream
-    if( ParseItem(&mst.st, &article ) )
-      ProcessArticle(&article, connection, db);
-    else printf("Could not read article link from RSS.\n");
+
+  // Download all feeds.  Loop until all feeds are claimed by a thread. 
+  while(true) {
+    //critital regtion where we read the feed counter and claim one. 
+    sem_wait(&domain->n_unclaimed_feeds_lock);
+    if( domain->n_unclaimed_feeds <= 0 ) {    // Have all feeds been claimed? 
+      sem_post(&domain->n_unclaimed_feeds_lock);
+      break;
+    }
+    l_rss_index = --(domain->n_unclaimed_feeds);  // decrement and copy locally.
+    sem_post(&domain->n_unclaimed_feeds_lock);     // end of critical region. 
+
+    // Download and store in local mstream. 
+    MSTNew(&mst, kTextDelimiters, false);
+    if ( CurlConnectionFetch(domain->rss_url[l_rss_index], mst.stream, &connection ) != CURLE_OK ) {
+      printf("Problem connecting to: \n%s\nError: %s\n", domain->rss_url[l_rss_index], connection.error_str);
+    }
+    else {
+      // critical in section where it checks for duplicate articles and writes
+      // writes articles stored in memstream to the articles vector and titles hashset
+      ParseFeed(&mst.st, domain);
+    }
+    MSTDispose(&mst);
   }
-  MSTDispose(&mst);
+  // All feeds have now been claimed by threads.  As each thread finishes its 
+  // feed, it moves on to downloading and storing article text.  
+  // Loop until all articles are done or claimed. 
+  while(true) {
+
+    // Here we claim an article by its index. 
+    sem_wait(&domain->articles_retreival_lock);
+    if( domain->n_articles <= 0 ) {
+      sem_post(&domain->articles_retreival_lock);
+      break;
+    }
+    article_index = --(domain->n_articles);
+    sem_post(&domain->articles_retreival_lock);
+
+
+    DownloadArticle(article_index, domain, &connection );  //TODO: separate download from process article. 
+
+  }
+  CurlConnectionDispose(&connection);
+}
+
+
+static void ParseFeed(streamtokenizer *st, domain_t *domain)
+{
+  article_t article;  
+
+  while (GetNextItemTag(st)) { // if true, <item ...> was just read and pulled from the data stream
+    // parse each <item> section into an article structure. 
+    if( !ParseItem(st, &article ) )
+      printf("Failed to read either title or url fields from RSS.\n");
+    else {
+
+      //put the article into the domain lists. 
+      //This is a critical section. 
+      sem_wait(&domain->titles_input_lock);
+      // only add articles with titles we haven't seen before. 
+      if(HashSetLookup(&domain->titles_hashset, article.title) == NULL) {
+        // we enter article into hashset of titles so we can quickly identify duplicate titles.
+        HashSetEnter( &domain->titles_hashset, article.title );
+        // the vector is what will be used later to download the full articles' html. 
+        VectorAppend(&domain->articles_vector, &article);
+      }
+      sem_post(&domain->titles_input_lock);
+    }
+  }
 }
 
 /**
@@ -276,7 +375,7 @@ static bool GetNextItemTag(streamtokenizer *st)
 }
 
 /**
- * Function: ProcessSingleNewsItem
+ * Function: ParseItem
  * -------------------------------
  * Code which parses the contents of a single <item> node within an RSS/XML feed.
  * At the moment this function is called, we're to assume that the <item> tag was just
@@ -315,10 +414,12 @@ static bool ParseItem(streamtokenizer *st, article_t *article)
     if (strncasecmp(htmlTag, kLinkTagPrefix, strlen(kLinkTagPrefix)) == 0) 
       ExtractElement(st, htmlTag, article->url, sizeof(article->url));
   }
-
-  //printf("%s\n", article->url);
-  
-  return (article->url[0] != '\0'); // if URL is empty, return false.  Otherwise true. 
+  // if URL or title are empty, return false. 
+  if( article->url[0] == '\0' || article->title[0] == '\0' ) {
+    printf("something is wrong with article's title: \"%s\"", article->title);
+    return false; 
+  }
+  return true; 
 }
 
 /**
@@ -363,6 +464,23 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
   STSkipOver(st, ">");
 }
 
+static void DownloadArticle( int article_index, domain_t *domain, curlconnection_t *connection ) {
+  // we have already validated that this article is not a repeat. 
+  article_t *article = (article_t*)VectorNth(&domain->articles_vector, article_index);
+  mstreamtokenizer_t *mst = &article->mst;
+
+  // we still need to initialize the memstream tokenizer. The article struct contains an mst object. 
+  MSTNew(mst, kTextDelimiters, false); 
+  //streamtokenizer *st = &mst->st;
+
+  // pull the article from the interwebs. 
+  if(CurlConnectionFetch(article->url, mst->stream, connection) != CURLE_OK) {
+    printf("Could not get article url:%s\n", article->url);
+    return;
+  }
+
+}
+
 /**
  * Function: ProcessArticle
  * ---------------------
@@ -376,29 +494,11 @@ static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBu
  * code that indexes the specified content.
  */
 
-static void ProcessArticle( article_t *article, curlconnection_t *connection, search_db *db )
+static void ProcessArticle( article_t *article, search_db *db )
 {
+  streamtokenizer *st = &article->mst.st;
 
-  if(strlen(article->title) == 0) {
-    printf("something is wrong with article's title: \"%s\"", article->title);
-    return; 
-  }
-
-
-  mstreamtokenizer_t mst;
-  MSTNew(&mst, kTextDelimiters, false); 
-  streamtokenizer *st = &mst.st;
-
-  // Is article already in the db?  If so, skip it; we have already read it all. 
-  if( HashSetLookup(&db->articles, article) != NULL ) return;
-  
-  
-  // pull the article from the interwebs. 
-  if(CurlConnectionFetch(article->url, mst.stream, connection) != CURLE_OK) {
-    printf("Could not get article url:%s\n", article->url);
-    return;
-  }
-
+    
   // If we got here, the article is not in the db yet, but we just successfully read the article contents, 
   // So now is the time to add it. 
   HashSetEnter(&db->articles, article);
@@ -433,7 +533,6 @@ static void ProcessArticle( article_t *article, curlconnection_t *connection, se
   //  printf(" [Ooooo... long word!]");
   //printf("\n");
 
-  MSTDispose(&mst);
 }
 
 /** 

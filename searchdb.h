@@ -10,6 +10,7 @@
 #include <assert.h>
 #include "hashset.h"
 #include "vector.h"
+#include "mstreamtokenizer.h"
 
 
 //#include <ctype.h>
@@ -21,12 +22,13 @@ typedef struct {
   char title[TITLE_N_BYTES];
   char desc[1024];
   char url[2048];
+  mstreamtokenizer_t mst;
 } article_t;
 
 typedef struct {
   char word[WORD_N_BYTES];
   vector occurrances; 
-} article_list_t;
+} occurrance_list_t;
 
 typedef struct {
   int count; 
@@ -46,6 +48,10 @@ static const int karticle_buckets = 997;
 static const int kword_buckets = 10007;  //100_003
 static const int kkey_size = 32;
 
+int StringHash(const void *string, int numBuckets);
+
+int StringCompare(const void *a, const void*b);
+
 /**
  * Initializes all three hashsets in the db, hooking them up with the 
  * correct HashFunctions, CompareFunctions and FreeFunctions.  
@@ -58,12 +64,12 @@ void DisposeDatabase(search_db *db);
 /**
  * Checks if the word is present in the words hashset.  
  * If word is already present, it does nothing and returns the address of the 
- * article_list_t that it found. 
- * If word is not already present, AddWordIfAbsent builds a article_list_t 
+ * occurrance_list_t that it found. 
+ * If word is not already present, AddWordIfAbsent builds a occurrance_list_t 
  * element, Inserts it into the words hashset, and returns the address of the new
- * article_list_t. 
+ * occurrance_list_t. 
  */
-article_list_t* AddWordIfAbsent(char *word);
+occurrance_list_t* AddWordIfAbsent(char *word);
 
 /**
  * RecordOccurrance

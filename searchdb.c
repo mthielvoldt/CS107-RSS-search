@@ -15,7 +15,7 @@
  * hashing "Peter Pawlowski" and "PETER PAWLOWSKI" to the same code.  
  */  
 static const signed long kHashMultiplier = -1664117991L;
-static int StringHash(const void *string, int numBuckets)  
+int StringHash(const void *string, int numBuckets)  
 {           
   char *s = (char*)string; 
   int i;
@@ -32,13 +32,13 @@ static int ArticleHash(const void *article_p, int numBuckets) {
 }
 
 static int WordHash( const void *article_list_p, int numBuckets) {
-  char *key = ((article_list_t*)article_list_p)->word;    // keys on the word (c string)
+  char *key = ((occurrance_list_t*)article_list_p)->word;    // keys on the word (c string)
   return StringHash(key, numBuckets);
 }
 
 // Compare functions /////////////////
 
-static int StringCompare(const void *a, const void*b) {
+int StringCompare(const void *a, const void*b) {
   return strcasecmp( (const char*)a, (const char*)b );
 }
 
@@ -50,9 +50,9 @@ static int ArticleCompare(const void *article_a, const void *article_b ) {
 }
 
 static int WordCompare(const void *article_list_a, const void *article_list_b) {
-  // WE know the parameters are pointers to article_list_t structures.  re-cast them as such, and get the word field.
-  char *a_key = ((article_list_t*)article_list_a)->word;
-  char *b_key = ((article_list_t*)article_list_b)->word;
+  // WE know the parameters are pointers to occurrance_list_t structures.  re-cast them as such, and get the word field.
+  char *a_key = ((occurrance_list_t*)article_list_a)->word;
+  char *b_key = ((occurrance_list_t*)article_list_b)->word;
   return strcasecmp(a_key, b_key);
 }
 
@@ -60,7 +60,7 @@ static int WordCompare(const void *article_list_a, const void *article_list_b) {
 // via it's function pointer, so it can not be inline. 
 static void ArticleListFreeFn( void * elem ) {
   //First we re-hydrate the type
-  article_list_t *article_list_p = (article_list_t*)elem;
+  occurrance_list_t *article_list_p = (occurrance_list_t*)elem;
 
   // Note: the vector itself *could* have its own freefn defined, if we had passed it one in each call to VectorNEw. 
   //  In this program, we did not because the occurrances aren't responsible for freeing the articles. 
@@ -71,7 +71,7 @@ static void ArticleListFreeFn( void * elem ) {
 void InitDatabase(search_db *db) {
   HashSetNew(&db->stop_words, sizeof(char)*kkey_size, kstopword_buckets, StringHash, StringCompare, NULL);
   HashSetNew(&db->articles, sizeof(article_t), karticle_buckets, ArticleHash, ArticleCompare, NULL );
-  HashSetNew( &db->words, sizeof(article_list_t), kword_buckets, WordHash, WordCompare, ArticleListFreeFn);
+  HashSetNew( &db->words, sizeof(occurrance_list_t), kword_buckets, WordHash, WordCompare, ArticleListFreeFn);
 }
 
 void DisposeDatabase(search_db *db) {
@@ -80,7 +80,7 @@ void DisposeDatabase(search_db *db) {
   HashSetDispose(&db->words);
 }
 
-void AddNewOccurrance( article_t *article_p, article_list_t *word_p) {
+void AddNewOccurrance( article_t *article_p, occurrance_list_t *word_p) {
   occurrance_t new_occurrance;
   new_occurrance.article_p = article_p; // set the address of the article
   new_occurrance.count = 1;
@@ -92,7 +92,7 @@ void AddNewOccurrance( article_t *article_p, article_list_t *word_p) {
 // Returns either the index of an occurrance in the article_list whose pointer to 
 // an article address matches the pointer passed in. 
 // or returns NULL if there is no matching occurrance
-occurrance_t* MatchingOccurrance( article_t *article_p, article_list_t *word_p)
+occurrance_t* MatchingOccurrance( article_t *article_p, occurrance_list_t *word_p)
 {
   int n_occurrances = VectorLength(&word_p->occurrances);
   if (n_occurrances == 0) return NULL;
@@ -130,19 +130,19 @@ bool RecordOccurrance(char *word, article_t *article_in, search_db *db){
   assert(article_p != NULL);
 
     
-  article_list_t *word_p = (article_list_t*)HashSetLookup(&db->words, word);
-  article_list_t new_word; 
+  occurrance_list_t *word_p = (occurrance_list_t*)HashSetLookup(&db->words, word);
+  occurrance_list_t new_word; 
  
   // if the word isn't present already, build and insert a new article_list. 
   if (word_p == NULL) {
-    // build a new article_list_t 
+    // build a new occurrance_list_t 
     // the occurrances vector doesn't need a free function because it is not responsible
     // for freeing the articles.  The articles hashset does that. 
     VectorNew(&new_word.occurrances, sizeof(occurrance_t), NULL, 100);
     strcpy(new_word.word, word); //everything is null-terminated, so we can use strcpy.
     HashSetEnter(&db->words, &new_word); // this memcpy's the new_word.
     // Now we need the location of the newly-minted word in the hashset. 
-    word_p = (article_list_t*)HashSetLookup(&db->words, word);
+    word_p = (occurrance_list_t*)HashSetLookup(&db->words, word);
 
     // we just added this word, so we know we don't have a matching article occurrance. 
     AddNewOccurrance(article_p, word_p);
@@ -187,7 +187,7 @@ void PrintArticles( const char *word, search_db *db) {
     return;
   }
   // find the word
-  article_list_t *word_p; 
+  occurrance_list_t *word_p; 
   word_p = HashSetLookup(&db->words, word);
   
   if(word_p == NULL) {
@@ -215,7 +215,7 @@ static int CompareOccurrances( const void *a, const void *b) {
 }
 
 static void MappedSorter( void *elem_addr, void *aux_data) {
-  article_list_t *article_list = (article_list_t*)elem_addr;
+  occurrance_list_t *article_list = (occurrance_list_t*)elem_addr;
   VectorSort(&article_list->occurrances, CompareOccurrances );
 }
 void SortOccurrances(search_db *db) {

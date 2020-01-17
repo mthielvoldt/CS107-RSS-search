@@ -68,13 +68,13 @@ static void ArticleListFreeFn( void * elem ) {
 }
 
 
-void InitDatabase(search_db *db) {
+void InitDatabase(search_db_t *db) {
   HashSetNew(&db->stop_words, sizeof(char)*kkey_size, kstopword_buckets, StringHash, StringCompare, NULL);
   HashSetNew(&db->articles, sizeof(article_t), karticle_buckets, ArticleHash, ArticleCompare, NULL );
   HashSetNew( &db->words, sizeof(occurrance_list_t), kword_buckets, WordHash, WordCompare, ArticleListFreeFn);
 }
 
-void DisposeDatabase(search_db *db) {
+void DisposeDatabase(search_db_t *db) {
   HashSetDispose(&db->stop_words);
   HashSetDispose(&db->articles);
   HashSetDispose(&db->words);
@@ -103,7 +103,7 @@ occurrance_t* MatchingOccurrance( article_t *article_p, occurrance_list_t *word_
   else return NULL; 
 }
 
-bool RecordOccurrance(char *word, article_t *article_in, search_db *db){
+bool RecordOccurrance(char *word, article_t *article_in, search_db_t *db){
 
   int word_length = strlen(word);
   assert(word_length > 0);
@@ -179,7 +179,7 @@ static void PrintArticle( void *elem_addr, void *auxData) {
 /**
  * Searches the database for the word.  If it's found it lists all the articles containing that word
  */ 
-void PrintArticles( const char *word, search_db *db) {
+void PrintArticles( const char *word, search_db_t *db) {
 
   // is it a stop-word? 
   if (HashSetLookup(&db->stop_words, word) != NULL) {
@@ -218,7 +218,7 @@ static void MappedSorter( void *elem_addr, void *aux_data) {
   occurrance_list_t *article_list = (occurrance_list_t*)elem_addr;
   VectorSort(&article_list->occurrances, CompareOccurrances );
 }
-void SortOccurrances(search_db *db) {
+void SortOccurrances(search_db_t *db) {
   HashSetMap(&db->words, MappedSorter, NULL);
 }
 

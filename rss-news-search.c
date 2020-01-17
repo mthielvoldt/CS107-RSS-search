@@ -16,20 +16,20 @@
 
 static void Welcome(const char *welcomeTextFileName);
 static void LoadStopList(hashset *stop_list);
-static void BuildIndices(const char *feedsFileName, search_db *db);
+static void BuildIndices(const char *feedsFileName, search_db_t *db);
 
-void DownloaderThread( void *arg );
+void* DownloaderThread( void *arg );
 static void ParseFeed(streamtokenizer *st, domain_t *domain);
 static void DownloadArticle( int article_index, domain_t *domain, curlconnection_t *connection );
 
 static bool GetNextItemTag(streamtokenizer *st);
 static bool ParseItem(streamtokenizer *st, article_t *article );
 static void ExtractElement(streamtokenizer *st, const char *htmlTag, char dataBuffer[], int bufferLength);
-static void ProcessArticle(article_t *article, search_db *db);
+static void ProcessArticle(article_t *article, search_db_t *db);
 static void QueryIndices();
-static void ProcessResponse(const char *word, search_db *db);
+static void ProcessResponse(const char *word, search_db_t *db);
 static bool WordIsWellFormed(const char *word);
-static void AddPair(char *word, search_db *db, article_t *article_addr );
+static void AddPair(char *word, search_db_t *db, article_t *article_addr );
 
 
 /**
@@ -55,20 +55,14 @@ static const char *const kDefaultFeedsFile = "./data/rss-feeds-large.txt";
 
 int main(int argc, char **argv)
 {
-  search_db db;   // the database. This will be passed down the function hierarchy.
-  time_t t1, t2;
+  search_db_t db;   // the database. This will be passed down the function hierarchy.
   InitDatabase(&db);
   
   Welcome(kWelcomeTextFile);
 
   LoadStopList(&db.stop_words);
 
-  //start = clock();
-  t1 = time(NULL);
   BuildIndices((argc == 1) ? kDefaultFeedsFile : argv[1], &db);  // runs only once. 
-  //finish = clock();
-  t2 = time(NULL);
-  printf("that took %f seconds.\n\n", difftime(t2, t1));
 
   QueryIndices(&db);  
 
@@ -133,7 +127,7 @@ static void LoadStopList(hashset *stop_list) {
 
 }
 
-static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
+static void BuildDomains(const char *feedsFileName, domain_t domains[], int *n_domains) {
 
   int path_index;
   domain_t *active_domain; 
@@ -145,7 +139,7 @@ static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
   assert(infile != NULL);
   STNew(&st, infile, kNewLineDelimiters, true);
     // build the domains. 
-  domains->n_domains = 0;
+  *n_domains = 0;
   while (STNextTokenUsingDifferentDelimiters(&st, rss_label, 400, ":")) { // ignore everything up to the first selicolon of the line
     STSkipOver(&st, ": ");		 // now ignore the semicolon and any whitespace directly after it
     STNextToken(&st, full_url, sizeof(full_url));   
@@ -160,8 +154,9 @@ static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
 
     // if this domain is not the same as the previous domain, advance to the next domain.
     if( strcmp(domain_name, previous_domain_name) ) { 
-      active_domain = &domains->domains[domains->n_domains];
-      domains->n_domains++;
+      active_domain = &domains[*n_domains];
+      (*n_domains)++;
+      //printf("domains %d", *n_domains);
 
       InitDomain(active_domain);
       // advance previous domain name
@@ -173,6 +168,44 @@ static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
   }
   STDispose(&st);
   fclose(infile);
+}
+
+static void DownloadWithThreads(domain_t domains[], int n_domains) {
+  pthread_t threads[50];
+  int i, j, n_threads = 0;
+
+  for(i = 0; i < n_domains; i++ )
+  {
+    //printf("\nDomain %d:\n", i );
+    for(j = 0; j < domains[i].n_unclaimed_feeds; j++) 
+    {
+      //printf("%s\n", domains[i].rss_url[j]);
+      pthread_create(&threads[n_threads], NULL, DownloaderThread, &domains[i] );
+      n_threads++;
+    }
+  }
+
+  // don't return until all threads have exited.
+  for( i = 0; i < n_threads; i++ ) {
+    pthread_join(threads[i], NULL);
+  }
+}
+
+static void MergeDomainData(domain_t domains[], int n_domains, search_db_t *db) {
+  int n_articles;
+  article_t *article_j; 
+
+   for( int i = 0; i < n_domains; i++ )
+  {
+    n_articles = domains[i].n_articles;
+    for( int j = 0; j < n_articles; j++) 
+    {
+      article_j = VectorNth( &domains[i].articles_vector, j);
+      ProcessArticle(article_j, db);
+    }
+    // now that all the articles are copied, to the db, we can toss the domain. 
+    DomainDispose( &domains[i] );    
+  }
 }
 /**
  * Function: BuildIndices
@@ -190,38 +223,33 @@ static void ReadFeedsFile(const char *feedsFileName, domain_list_t *domains) {
  * document and index its content.
  */
 
-static void BuildIndices(const char *feedsFileName, search_db *db )
+static void BuildIndices(const char *feedsFileName, search_db_t *db )
 {
   curl_global_init(CURL_GLOBAL_SSL);  // Run once.  BuildIndices runs once for life of program. 
-  domain_list_t domains; 
-  domains.n_domains = 0;
+  domain_t domains[10]; 
+  int n_domains;
+  time_t t1;
 
-  ReadFeedsFile(feedsFileName, &domains);
+  // Reads the feeds file and groups feeds by the domain, 
+  // initializing a domain structure for each unique domain. 
+  BuildDomains(feedsFileName, domains, &n_domains); // this builds the domains. 
 
-  for( int i = 0; i < domains.n_domains; i++ )
-  {
-    printf("\nDomain %d:\n", i );
-    for(int j = 0; j < domains.domains[i].n_unclaimed_feeds; j++) 
-    {
-      printf("%s\n", domains.domains[i].rss_url[j]);
-    }
+  // this is blocking. It spaws threads, but rejoins with all before returning. 
+  t1 = time(NULL);
+  DownloadWithThreads(domains, n_domains);
+  printf("Downloads took %f seconds.\n\n", difftime(time(NULL), t1));
 
-  }
-  
-  //ProcessFeed(full_url, db);
-  
-  //ProcessArticle(&article, db);
-  
-  printf("Processed %d unique articles. \n", HashSetCount(&db->articles));
+  // Iterates through all the domain data and populates db. 
+  t1 = time(NULL);
+  MergeDomainData(domains, n_domains, db);
+  printf("Processing took %f seconds.\n", difftime(time(NULL), t1));
+  printf("Processed %d unique articles. \n\n", HashSetCount(&db->articles));
 
   // now we sort all vectors that store the occurrance of a word in an article.  
   // When we search for a term, the articles we get back will be in sorted order from those
   // articles that mention the term the most, to those the the fewest mentions. 
   SortOccurrances(db);
-  
-  printf("\n");
 
-  
   curl_global_cleanup();  // once for life of program. 
 }
 
@@ -257,14 +285,15 @@ static void BuildIndices(const char *feedsFileName, search_db *db )
 
 static const char *const kTextDelimiters = " \t\n\r\b!@$%^*()_+={[}]|\\'\":;/?.>,<~`";
 
-void DownloaderThread( void *arg ) {
+void* DownloaderThread( void *arg ) {
+  domain_t *domain = (domain_t*)arg; 
 
   curlconnection_t connection;    // Each thread has a single connection.
   CurlConnectionNew(&connection);
   int l_rss_index, article_index;
   mstreamtokenizer_t mst;
 
-  domain_t *domain = (domain_t*)arg; 
+  //printf("Thread Started \n");
 
 
   // Download all feeds.  Loop until all feeds are claimed by a thread. 
@@ -293,15 +322,17 @@ void DownloaderThread( void *arg ) {
   // All feeds have now been claimed by threads.  As each thread finishes its 
   // feed, it moves on to downloading and storing article text.  
   // Loop until all articles are done or claimed. 
+
   while(true) {
 
     // Here we claim an article by its index. 
     sem_wait(&domain->articles_retreival_lock);
-    if( domain->n_articles <= 0 ) {
+    if( domain->articles_tail >= domain->n_articles ) {
       sem_post(&domain->articles_retreival_lock);
       break;
     }
-    article_index = --(domain->n_articles);
+    article_index = domain->articles_tail;
+    domain->articles_tail++;
     sem_post(&domain->articles_retreival_lock);
 
 
@@ -309,6 +340,8 @@ void DownloaderThread( void *arg ) {
 
   }
   CurlConnectionDispose(&connection);
+  printf("Thread Finished \n");
+  return NULL;
 }
 
 
@@ -331,8 +364,14 @@ static void ParseFeed(streamtokenizer *st, domain_t *domain)
         HashSetEnter( &domain->titles_hashset, article.title );
         // the vector is what will be used later to download the full articles' html. 
         VectorAppend(&domain->articles_vector, &article);
+        domain->n_articles++;
+
+        //printf("    %s\n", article.title);
       }
+      //else printf("duplicate ignored\n");
       sem_post(&domain->titles_input_lock);
+
+      
     }
   }
 }
@@ -478,6 +517,7 @@ static void DownloadArticle( int article_index, domain_t *domain, curlconnection
     printf("Could not get article url:%s\n", article->url);
     return;
   }
+  printf("  downloaded: %s\n", article->title);
 
 }
 
@@ -494,14 +534,11 @@ static void DownloadArticle( int article_index, domain_t *domain, curlconnection
  * code that indexes the specified content.
  */
 
-static void ProcessArticle( article_t *article, search_db *db )
+static void ProcessArticle( article_t *article, search_db_t *db )
 {
   streamtokenizer *st = &article->mst.st;
 
-    
-  // If we got here, the article is not in the db yet, but we just successfully read the article contents, 
-  // So now is the time to add it. 
-  HashSetEnter(&db->articles, article);
+  HashSetEnter(&db->articles, article); // makes its own copy. 
 
   int numWords = 0;
   char word[1024];
@@ -527,12 +564,7 @@ static void ProcessArticle( article_t *article, search_db *db )
   strncpy(title_substring, article->title, 80);
   title_substring[80] = '\0';
 
-  printf("    %s  Words: %d \n", title_substring, numWords);
-  //printf("\tThe longest word scanned was \"%s\".", longestWord);
-  //if (strlen(longestWord) >= 15 && (strchr(longestWord, '-') == NULL)) 
-  //  printf(" [Ooooo... long word!]");
-  //printf("\n");
-
+  //printf("    %s  Words: %d \n", title_substring, numWords);
 }
 
 /** 
@@ -543,7 +575,7 @@ static void ProcessArticle( article_t *article, search_db *db )
  * that contain that word.
  */
 
-static void QueryIndices(search_db *db)
+static void QueryIndices(search_db_t *db)
 {
   char response[1024];
   while (true) {
@@ -562,7 +594,7 @@ static void QueryIndices(search_db *db)
  * for a list of web documents containing the specified word.
  */
 
-static void ProcessResponse(const char *word, search_db *db)
+static void ProcessResponse(const char *word, search_db_t *db)
 {
   if (WordIsWellFormed(word)) {
 

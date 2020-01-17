@@ -39,7 +39,7 @@ typedef struct {
   hashset stop_words; 
   hashset articles;
   hashset words;
-} search_db; 
+} search_db_t; 
 
 char *strcpy(char *dest, const char *src);  // in string.h
 
@@ -56,10 +56,10 @@ int StringCompare(const void *a, const void*b);
  * Initializes all three hashsets in the db, hooking them up with the 
  * correct HashFunctions, CompareFunctions and FreeFunctions.  
 */
-void InitDatabase(search_db *db);
+void InitDatabase(search_db_t *db);
 
 // Torches all of it. 
-void DisposeDatabase(search_db *db);
+void DisposeDatabase(search_db_t *db);
 
 /**
  * Checks if the word is present in the words hashset.  
@@ -99,10 +99,10 @@ occurrance_list_t* AddWordIfAbsent(char *word);
  * - the article is already present in the articles database.
  * - the word is at least 1 character long. 
  */
-bool RecordOccurrance(char *word, article_t *article_in, search_db *db);
+bool RecordOccurrance(char *word, article_t *article_in, search_db_t *db);
 
-void SortOccurrances(search_db *db);
+void SortOccurrances(search_db_t *db);
 
-void PrintArticles( const char *word, search_db *db);
+void PrintArticles( const char *word, search_db_t *db);
 
 #endif  // __SEARCHDB_
